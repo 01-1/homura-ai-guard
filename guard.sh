@@ -30,15 +30,18 @@ ruleset() { # name
 }
 
 # True if every value in the wanted ruleset matches the existing one. Fields GitHub
-# adds on its own (ids, extra pull_request defaults) are ignored.
+# adds on its own (ids, extra pull_request defaults) are ignored, and owner bypass
+# entries are compared by type and mode only (GitHub may not echo their actor_id).
 matches() { # want have
   jq -n --argjson w "$1" --argjson h "$2" '
+    def norm: if (.bypass_actors|type) == "array"
+      then .bypass_actors |= map(if .actor_type == "OrganizationAdmin" then del(.actor_id) else . end) else . end;
     def sub($w; $h):
       if ($w|type) == "object" then ($h|type) == "object" and all($w|keys[]; . as $k | sub($w[$k]; $h[$k]))
       elif ($w|type) == "array" then ($h|type) == "array" and ($w|length) == ($h|length)
         and all(range($w|length); . as $i | sub($w[$i]; $h[$i]))
       else $w == $h end;
-    sub($w; $h)' | grep -qx true
+    sub($w|norm; $h|norm)' | grep -qx true
 }
 
 ensure_ruleset() { # repo name existing-list-json
@@ -53,7 +56,7 @@ ensure_ruleset() { # repo name existing-list-json
   have=$(gh api "repos/$ORG/$repo/rulesets/$id") || return 1
   if ! matches "$want" "$have"; then
     gh api -X PUT "repos/$ORG/$repo/rulesets/$id" --input - <<< "$want" >/dev/null || return 1
-    echo "$repo: restored ruleset $name"
+    echo "$repo: restored ruleset $name (was: $(jq -c '{enforcement, bypass_actors, conditions, rules}' <<< "$have"))"
   fi
 }
 
