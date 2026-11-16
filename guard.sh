@@ -29,14 +29,31 @@ ruleset() { # name
   esac
 }
 
-ensure_ruleset() { # repo name
-  local repo=$1 name=$2 id
-  id=$(gh api "repos/$ORG/$repo/rulesets?includes_parents=false" --jq ".[] | select(.name==\"$name\") | .id" | head -1)
-  if [ -n "$id" ]; then
-    ruleset "$name" | gh api -X PUT "repos/$ORG/$repo/rulesets/$id" --input - >/dev/null
-  else
-    ruleset "$name" | gh api -X POST "repos/$ORG/$repo/rulesets" --input - >/dev/null
+# True if every value in the wanted ruleset matches the existing one. Fields GitHub
+# adds on its own (ids, extra pull_request defaults) are ignored.
+matches() { # want have
+  jq -n --argjson w "$1" --argjson h "$2" '
+    def sub($w; $h):
+      if ($w|type) == "object" then ($h|type) == "object" and all($w|keys[]; . as $k | sub($w[$k]; $h[$k]))
+      elif ($w|type) == "array" then ($h|type) == "array" and ($w|length) == ($h|length)
+        and all(range($w|length); . as $i | sub($w[$i]; $h[$i]))
+      else $w == $h end;
+    sub($w; $h)' | grep -qx true
+}
+
+ensure_ruleset() { # repo name existing-list-json
+  local repo=$1 name=$2 list=$3 id want have
+  want=$(ruleset "$name")
+  id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<< "$list" | head -1)
+  if [ -z "$id" ]; then
+    gh api -X POST "repos/$ORG/$repo/rulesets" --input - <<< "$want" >/dev/null || return 1
     echo "$repo: added ruleset $name"
+    return
+  fi
+  have=$(gh api "repos/$ORG/$repo/rulesets/$id") || return 1
+  if ! matches "$want" "$have"; then
+    gh api -X PUT "repos/$ORG/$repo/rulesets/$id" --input - <<< "$want" >/dev/null || return 1
+    echo "$repo: restored ruleset $name"
   fi
 }
 
@@ -50,9 +67,12 @@ while read -r name vis archived; do
   [ -z "$name" ] && continue
   [ "$archived" = true ] && continue
   if [ "$vis" = public ]; then
-    for rs in agent-guard-branches agent-guard-tags agent-guard-pr; do
-      ensure_ruleset "$name" "$rs" || { echo "$name: $rs FAILED"; fail=1; }
-    done
+    list=$(gh api "repos/$ORG/$name/rulesets?includes_parents=false") || { echo "$name: listing rulesets FAILED"; fail=1; list=""; }
+    if [ -n "$list" ]; then
+      for rs in agent-guard-branches agent-guard-tags agent-guard-pr; do
+        ensure_ruleset "$name" "$rs" "$list" || { echo "$name: $rs FAILED"; fail=1; }
+      done
+    fi
   fi
   direct=$(gh api "repos/$ORG/$name/collaborators?affiliation=direct&per_page=100" --jq ".[] | select(.login==\"$BOT\") | .role_name")
   if [ -n "$direct" ]; then
