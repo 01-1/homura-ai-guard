@@ -1,0 +1,17 @@
+name: org-guard
+on:
+  schedule: [{cron: "*/10 * * * *"}]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency: {group: guard, cancel-in-progress: false}
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./guard.sh
+        env:
+          GH_TOKEN: ${{ secrets.GUARD_TOKEN }}
+          ORG: homura-ai
+          BOT: meowc-at
